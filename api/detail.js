@@ -8,15 +8,59 @@ const PDDIKTI_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
 };
 
+let cachedPnlList = null;
+let lastCacheTime = 0;
+
+async function getPnlList() {
+  const now = Date.now();
+  if (cachedPnlList && (now - lastCacheTime < 3600000)) return cachedPnlList;
+  try {
+    const resp = await fetch('https://data.pnl.ac.id/dosen/list', {
+      headers: {
+        'Accept': 'text/html,application/xhtml+xml',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    if (!resp.ok) return cachedPnlList || [];
+    const html = await resp.text();
+    const trRegex = /<tr[\s\S]*?<\/tr>/gi;
+    const matches = html.match(trRegex) || [];
+    const rows = [];
+    for (const tr of matches) {
+      const tdMatches = [...tr.matchAll(/<td[\s\S]*?>([\s\S]*?)<\/td>/gi)];
+      if (tdMatches.length >= 11) {
+        const clean = tdMatches.map(m => m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
+        if (/^\d+$/.test(clean[0])) {
+          rows.push({
+            no: clean[0],
+            nama: clean[1],
+            nidn: clean[2] || '',
+            nuptk: clean[3] || '',
+            prodi: clean[8] || '',
+            jurusan: clean[9] || ''
+          });
+        }
+      }
+    }
+    if (rows.length > 0) {
+      cachedPnlList = rows;
+      lastCacheTime = now;
+    }
+    return cachedPnlList || [];
+  } catch (_) {
+    return cachedPnlList || [];
+  }
+}
+
 function extractRecords(v, depth = 0) {
   if (depth > 6 || !v || typeof v !== 'object') return [];
   if (Array.isArray(v)) {
     return v.filter(item => item && typeof item === 'object');
   }
   for (const k of ['dosen', 'data', 'results', 'result', 'items', 'records', 'content']) {
-    if (k in v) {
-      const res = extractRecords(v[k], depth + 1);
-      if (res.length > 0) return res;
+    if (v[k]) {
+      const r = extractRecords(v[k], depth + 1);
+      if (r.length > 0) return r;
     }
   }
   return [];
@@ -29,33 +73,42 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   let id = (req.query?.id || '').trim();
-  const nidnParam = (req.query?.nidn || '').trim();
-  const namaParam = (req.query?.nama || '').trim();
+  let nidn = (req.query?.nidn || '').trim();
+  let nama = (req.query?.nama || '').trim();
 
-  if (!id && !nidnParam && !namaParam) {
+  if (!id && !nidn && !nama) {
     return res.status(400).json({ error: 'Parameter dosen harus disertakan.' });
   }
 
+  // Jika ID adalah hash PDDikti langsung (panjang dan ada karakter '=')
   let pddiktiId = (id.includes('=') && !id.startsWith('nidn_') && !id.startsWith('nama_')) ? id : null;
 
-  // Resolusi ID jika belum berupa hash PDDikti
+  // Jika belum berupa hash PDDikti: cari nama dosen dari daftar PNL
   if (!pddiktiId) {
-    // 1. Cari berdasarkan NAMA dosen (Paling akurat di PDDikti untuk mencocokkan dosen PNL)
-    const nameToSearch = namaParam || (id.startsWith('nama_') ? decodeURIComponent(id.replace('nama_', '')) : '');
-    const nidnToMatch = nidnParam || (id.startsWith('nidn_') ? id.replace('nidn_', '') : '');
+    if (id.startsWith('nidn_')) nidn = id.replace('nidn_', '');
+    if (id.startsWith('nama_')) nama = decodeURIComponent(id.replace('nama_', ''));
 
-    if (nameToSearch) {
+    // Jika belum ada nama tapi ada NIDN, cari nama lengkap dari portal data PNL
+    if (!nama && nidn) {
+      const pnl = await getPnlList();
+      const found = pnl.find(d => d.nidn === nidn);
+      if (found && found.nama) {
+        nama = found.nama;
+      }
+    }
+
+    // Cari ke PDDikti dengan NAMA LENGKAP dosen (paling akurat)
+    if (nama) {
       try {
-        const searchResp = await fetch(`${API_ROOT}/pencarian/dosen/${encodeURIComponent(nameToSearch)}`, {
-          headers: PDDIKTI_HEADERS
-        });
+        const u = `${API_ROOT}/pencarian/dosen/${encodeURIComponent(nama)}`;
+        const searchResp = await fetch(u, { headers: PDDIKTI_HEADERS });
         if (searchResp.ok) {
           const searchJson = await searchResp.json();
           const records = extractRecords(searchJson);
           const match = records.find(r => 
-            (nidnToMatch && r.nidn === nidnToMatch) || 
+            (nidn && r.nidn === nidn) || 
             (r.nama_pt && (r.nama_pt.toLowerCase().includes('lhokseumawe') || r.nama_pt.toLowerCase().includes('pnl'))) ||
-            (r.nama && r.nama.toLowerCase().trim() === nameToSearch.toLowerCase().trim())
+            (r.nama && r.nama.toLowerCase().trim() === nama.toLowerCase().trim())
           );
           if (match && (match.id || match.id_sdm)) {
             pddiktiId = match.id || match.id_sdm;
@@ -64,16 +117,15 @@ export default async function handler(req, res) {
       } catch (_) {}
     }
 
-    // 2. Jika nama belum ketemu, coba cari berdasarkan NIDN
-    if (!pddiktiId && nidnToMatch) {
+    // Jika belum ketemu, coba cari berdasarkan NIDN langsung ke PDDikti
+    if (!pddiktiId && nidn) {
       try {
-        const searchResp = await fetch(`${API_ROOT}/pencarian/dosen/${encodeURIComponent(nidnToMatch)}`, {
-          headers: PDDIKTI_HEADERS
-        });
+        const u = `${API_ROOT}/pencarian/dosen/${encodeURIComponent(nidn)}`;
+        const searchResp = await fetch(u, { headers: PDDIKTI_HEADERS });
         if (searchResp.ok) {
           const searchJson = await searchResp.json();
           const records = extractRecords(searchJson);
-          const match = records.find(r => r.nidn === nidnToMatch);
+          const match = records.find(r => r.nidn === nidn);
           if (match && (match.id || match.id_sdm)) {
             pddiktiId = match.id || match.id_sdm;
           }
@@ -82,13 +134,14 @@ export default async function handler(req, res) {
     }
   }
 
+  // Jika tetap tidak ditemukan di PDDikti
   if (!pddiktiId) {
     return res.status(200).json({
       success: true,
       pendidikan: [],
       mengajar: {},
       total_mengajar: 0,
-      note: 'Riwayat detail PDDikti belum tersedia untuk dosen ini.'
+      note: 'Dosen ini belum memiliki riwayat tercatat di PDDikti.'
     });
   }
 

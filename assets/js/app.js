@@ -168,7 +168,11 @@
     mengajarContainer.innerHTML = '';
 
     try {
-      const resp = await fetch(getApiUrl('detail', { id: dosen.id || dosen.nidn || dosen.nama }));
+      const resp = await fetch(getApiUrl('detail', { 
+        id: dosen.id || '',
+        nama: dosen.nama || '',
+        nidn: dosen.nidn || ''
+      }));
       const data = await resp.json();
 
       // Render Riwayat Pendidikan

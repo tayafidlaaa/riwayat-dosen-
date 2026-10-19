@@ -36,28 +36,60 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Parameter dosen harus disertakan.' });
   }
 
-  let pddiktiId = id;
-  if (id.startsWith('nidn_') || id.startsWith('nama_') || !id.includes('=')) {
-    const searchKey = id.startsWith('nidn_') 
-      ? id.replace('nidn_', '') 
-      : (nidnParam || namaParam || id.replace('nama_', ''));
+  let pddiktiId = (id.includes('=') && !id.startsWith('nidn_') && !id.startsWith('nama_')) ? id : null;
 
-    try {
-      const searchResp = await fetch(`${API_ROOT}/pencarian/dosen/${encodeURIComponent(searchKey)}`, {
-        headers: PDDIKTI_HEADERS
-      });
-      if (searchResp.ok) {
-        const searchJson = await searchResp.json();
-        const records = extractRecords(searchJson);
-        const match = records.find(r => 
-          (r.nidn && r.nidn === searchKey) || 
-          (r.nama && r.nama.toLowerCase() === searchKey.toLowerCase())
-        );
-        if (match && (match.id || match.id_sdm)) {
-          pddiktiId = match.id || match.id_sdm;
+  // Resolusi ID jika belum berupa hash PDDikti
+  if (!pddiktiId) {
+    // 1. Cari berdasarkan NAMA dosen (Paling akurat di PDDikti untuk mencocokkan dosen PNL)
+    const nameToSearch = namaParam || (id.startsWith('nama_') ? decodeURIComponent(id.replace('nama_', '')) : '');
+    const nidnToMatch = nidnParam || (id.startsWith('nidn_') ? id.replace('nidn_', '') : '');
+
+    if (nameToSearch) {
+      try {
+        const searchResp = await fetch(`${API_ROOT}/pencarian/dosen/${encodeURIComponent(nameToSearch)}`, {
+          headers: PDDIKTI_HEADERS
+        });
+        if (searchResp.ok) {
+          const searchJson = await searchResp.json();
+          const records = extractRecords(searchJson);
+          const match = records.find(r => 
+            (nidnToMatch && r.nidn === nidnToMatch) || 
+            (r.nama_pt && (r.nama_pt.toLowerCase().includes('lhokseumawe') || r.nama_pt.toLowerCase().includes('pnl'))) ||
+            (r.nama && r.nama.toLowerCase().trim() === nameToSearch.toLowerCase().trim())
+          );
+          if (match && (match.id || match.id_sdm)) {
+            pddiktiId = match.id || match.id_sdm;
+          }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
+
+    // 2. Jika nama belum ketemu, coba cari berdasarkan NIDN
+    if (!pddiktiId && nidnToMatch) {
+      try {
+        const searchResp = await fetch(`${API_ROOT}/pencarian/dosen/${encodeURIComponent(nidnToMatch)}`, {
+          headers: PDDIKTI_HEADERS
+        });
+        if (searchResp.ok) {
+          const searchJson = await searchResp.json();
+          const records = extractRecords(searchJson);
+          const match = records.find(r => r.nidn === nidnToMatch);
+          if (match && (match.id || match.id_sdm)) {
+            pddiktiId = match.id || match.id_sdm;
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  if (!pddiktiId) {
+    return res.status(200).json({
+      success: true,
+      pendidikan: [],
+      mengajar: {},
+      total_mengajar: 0,
+      note: 'Riwayat detail PDDikti belum tersedia untuk dosen ini.'
+    });
   }
 
   try {
@@ -123,7 +155,7 @@ export default async function handler(req, res) {
       pendidikan: [],
       mengajar: {},
       total_mengajar: 0,
-      note: 'Riwayat detail PDDikti belum tersedia untuk dosen ini.'
+      note: 'Riwayat detail PDDikti gagal dimuat: ' + e.message
     });
   }
 }

@@ -80,15 +80,12 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Parameter dosen harus disertakan.' });
   }
 
-  // Jika ID adalah hash PDDikti langsung (panjang dan ada karakter '=')
   let pddiktiId = (id.includes('=') && !id.startsWith('nidn_') && !id.startsWith('nama_')) ? id : null;
 
-  // Jika belum berupa hash PDDikti: cari nama dosen dari daftar PNL
   if (!pddiktiId) {
     if (id.startsWith('nidn_')) nidn = id.replace('nidn_', '');
     if (id.startsWith('nama_')) nama = decodeURIComponent(id.replace('nama_', ''));
 
-    // Jika belum ada nama tapi ada NIDN, cari nama lengkap dari portal data PNL
     if (!nama && nidn) {
       const pnl = await getPnlList();
       const found = pnl.find(d => d.nidn === nidn);
@@ -97,7 +94,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // Cari ke PDDikti dengan NAMA LENGKAP dosen (paling akurat)
     if (nama) {
       try {
         const u = `${API_ROOT}/pencarian/dosen/${encodeURIComponent(nama)}`;
@@ -117,7 +113,6 @@ export default async function handler(req, res) {
       } catch (_) {}
     }
 
-    // Jika belum ketemu, coba cari berdasarkan NIDN langsung ke PDDikti
     if (!pddiktiId && nidn) {
       try {
         const u = `${API_ROOT}/pencarian/dosen/${encodeURIComponent(nidn)}`;
@@ -134,7 +129,6 @@ export default async function handler(req, res) {
     }
   }
 
-  // Jika tetap tidak ditemukan di PDDikti
   if (!pddiktiId) {
     return res.status(200).json({
       success: true,
@@ -165,7 +159,6 @@ export default async function handler(req, res) {
     const rawPend = extractRecords(studyJson);
     const rawMeng = extractRecords(teachJson);
 
-    // Normalize pendidikan
     const pend = rawPend.map(rec => ({
       jenjang: (rec.jenjang || rec.nama_jenjang_didik || rec.jenjang_pendidikan || '').trim(),
       gelar: (rec.gelar_akademik || rec.singkatan_gelar || rec.gelar || '').trim(),
@@ -178,7 +171,6 @@ export default async function handler(req, res) {
       return yb - ya;
     });
 
-    // Normalize and group mengajar
     const groups = {};
     for (const r of rawMeng) {
       const semester = (r.nama_semester || r.semester || r.id_smt || 'Semester tidak diketahui').trim();

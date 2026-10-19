@@ -1,7 +1,7 @@
 const API_ROOT = 'https://pddikti.kemdiktisaintek.go.id/api';
 
 const PDDIKTI_HEADERS = {
-  'Accept': 'application/json',
+  'Accept': 'application/json, text/plain, */*',
   'Content-Type': 'application/json',
   'Origin': 'https://pddikti.kemdiktisaintek.go.id',
   'Referer': 'https://pddikti.kemdiktisaintek.go.id/',
@@ -80,15 +80,14 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Parameter dosen harus disertakan.' });
   }
 
-  // Jika ID adalah hash PDDikti langsung (panjang dan ada karakter '=')
+  // Jika ID berupa encrypted hash PDDikti langsung (panjang dan ada karakter '=')
   let pddiktiId = (id.includes('=') && !id.startsWith('nidn_') && !id.startsWith('nama_')) ? id : null;
 
-  // Jika belum berupa hash PDDikti: cari nama dosen dari daftar PNL
   if (!pddiktiId) {
     if (id.startsWith('nidn_')) nidn = id.replace('nidn_', '');
     if (id.startsWith('nama_')) nama = decodeURIComponent(id.replace('nama_', ''));
 
-    // Jika belum ada nama tapi ada NIDN, cari nama lengkap dari portal data PNL
+    // Jika belum ada nama tapi ada NIDN, cari nama dosen dari daftar PNL
     if (!nama && nidn) {
       const pnl = await getPnlList();
       const found = pnl.find(d => d.nidn === nidn);
@@ -97,10 +96,41 @@ export default async function handler(req, res) {
       }
     }
 
-    // Cari ke PDDikti dengan NAMA LENGKAP dosen (paling akurat)
+    // Cari ke PDDikti via endpoint /api/pencarian/enc/all (rekomendasi resmi PDDikti)
+    const queries = [];
     if (nama) {
+      queries.push(`${nama} POLITEKNIK NEGERI LHOKSEUMAWE`);
+      queries.push(nama);
+    }
+    if (nidn) {
+      queries.push(nidn);
+    }
+
+    for (const q of queries) {
       try {
-        const u = `${API_ROOT}/pencarian/dosen/${encodeURIComponent(nama)}`;
+        const u = `${API_ROOT}/pencarian/enc/all/${encodeURIComponent(q)}`;
+        const searchResp = await fetch(u, { headers: PDDIKTI_HEADERS });
+        if (searchResp.ok) {
+          const searchJson = await searchResp.json();
+          const list = searchJson.data?.dosen || extractRecords(searchJson);
+          const match = list.find(d => 
+            (nidn && d.nidn === nidn) || 
+            (d.nama_pt && (d.nama_pt.toLowerCase().includes('lhokseumawe') || d.nama_pt.toLowerCase().includes('pnl'))) ||
+            (d.sinkatan_pt && d.sinkatan_pt.toLowerCase().includes('lhokseumawe')) ||
+            (nama && d.nama && d.nama.toLowerCase().trim() === nama.toLowerCase().trim())
+          );
+          if (match && (match.id || match.id_sdm)) {
+            pddiktiId = match.id || match.id_sdm;
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Fallback pencarian biasa jika belum ketemu
+    if (!pddiktiId && (nama || nidn)) {
+      try {
+        const u = `${API_ROOT}/pencarian/dosen/${encodeURIComponent(nama || nidn)}`;
         const searchResp = await fetch(u, { headers: PDDIKTI_HEADERS });
         if (searchResp.ok) {
           const searchJson = await searchResp.json();
@@ -108,24 +138,8 @@ export default async function handler(req, res) {
           const match = records.find(r => 
             (nidn && r.nidn === nidn) || 
             (r.nama_pt && (r.nama_pt.toLowerCase().includes('lhokseumawe') || r.nama_pt.toLowerCase().includes('pnl'))) ||
-            (r.nama && r.nama.toLowerCase().trim() === nama.toLowerCase().trim())
+            (nama && r.nama && r.nama.toLowerCase().trim() === nama.toLowerCase().trim())
           );
-          if (match && (match.id || match.id_sdm)) {
-            pddiktiId = match.id || match.id_sdm;
-          }
-        }
-      } catch (_) {}
-    }
-
-    // Jika belum ketemu, coba cari berdasarkan NIDN langsung ke PDDikti
-    if (!pddiktiId && nidn) {
-      try {
-        const u = `${API_ROOT}/pencarian/dosen/${encodeURIComponent(nidn)}`;
-        const searchResp = await fetch(u, { headers: PDDIKTI_HEADERS });
-        if (searchResp.ok) {
-          const searchJson = await searchResp.json();
-          const records = extractRecords(searchJson);
-          const match = records.find(r => r.nidn === nidn);
           if (match && (match.id || match.id_sdm)) {
             pddiktiId = match.id || match.id_sdm;
           }
@@ -138,6 +152,7 @@ export default async function handler(req, res) {
   if (!pddiktiId) {
     return res.status(200).json({
       success: true,
+      profile: null,
       pendidikan: [],
       mengajar: {},
       total_mengajar: 0,
@@ -146,7 +161,12 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [studyRes, teachRes] = await Promise.all([
+    const [profRes, studyRes, teachRes] = await Promise.all([
+      fetch(`${API_ROOT}/dosen/profile`, {
+        method: 'POST',
+        headers: PDDIKTI_HEADERS,
+        body: JSON.stringify({ id: pddiktiId })
+      }),
       fetch(`${API_ROOT}/dosen/study-history`, {
         method: 'POST',
         headers: PDDIKTI_HEADERS,
@@ -159,11 +179,13 @@ export default async function handler(req, res) {
       })
     ]);
 
+    const profJson = profRes.ok ? await profRes.json() : null;
     const studyJson = studyRes.ok ? await studyRes.json() : null;
     const teachJson = teachRes.ok ? await teachRes.json() : null;
 
-    const rawPend = extractRecords(studyJson);
-    const rawMeng = extractRecords(teachJson);
+    const rawPend = studyJson?.data || extractRecords(studyJson);
+    const rawMeng = teachJson?.data || extractRecords(teachJson);
+    const profileData = profJson?.data || null;
 
     // Normalize pendidikan
     const pend = rawPend.map(rec => ({
@@ -198,6 +220,7 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=604800');
     return res.status(200).json({
       success: true,
+      profile: profileData,
       pendidikan: pend,
       mengajar: groups,
       total_mengajar: rawMeng.length
@@ -205,6 +228,7 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(200).json({
       success: true,
+      profile: null,
       pendidikan: [],
       mengajar: {},
       total_mengajar: 0,

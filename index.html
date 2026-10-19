@@ -1147,8 +1147,20 @@ footer.main-footer {
     mengajarContainer.innerHTML = '';
 
     try {
-      const resp = await fetch(getApiUrl('detail', { id: dosen.id || dosen.nidn || dosen.nama }));
+      const resp = await fetch(getApiUrl('detail', { 
+        id: dosen.id || dosen.nidn || dosen.nama,
+        nama: dosen.nama,
+        nidn: dosen.nidn
+      }));
       const data = await resp.json();
+
+      // Tambahkan info profil dari PDDikti jika ada
+      if (data.profile) {
+        if (data.profile.jabatan_akademik) badges.push(`<div class="profile-badge">Jabatan <b>${h(data.profile.jabatan_akademik)}</b></div>`);
+        if (data.profile.pendidikan_tertinggi) badges.push(`<div class="profile-badge">Pendidikan <b>${h(data.profile.pendidikan_tertinggi)}</b></div>`);
+        if (data.profile.status_aktivitas) badges.push(`<div class="profile-badge">Status <b>${h(data.profile.status_aktivitas)}</b></div>`);
+        detailBadges.innerHTML = badges.join('');
+      }
 
       // Render Riwayat Pendidikan
       const pend = data.pendidikan || [];

@@ -110,11 +110,12 @@ export default async function handler(req, res) {
     });
   }
 
-  // 2. Fallback: Cari ke PDDikti
+  // 2. Fallback: Cari ke PDDikti via enc/all & pencarian/dosen
   try {
     const urls = [
-      `${API_ROOT}/pencarian/dosen/${encodeURIComponent(q)}`,
-      `${API_ROOT}/pencarian/en/call/${encodeURIComponent(q)}`
+      `${API_ROOT}/pencarian/enc/all/${encodeURIComponent(q + ' POLITEKNIK NEGERI LHOKSEUMAWE')}`,
+      `${API_ROOT}/pencarian/enc/all/${encodeURIComponent(q)}`,
+      `${API_ROOT}/pencarian/dosen/${encodeURIComponent(q)}`
     ];
 
     let pddiktiList = [];
@@ -122,9 +123,9 @@ export default async function handler(req, res) {
       const resp = await fetch(u, { headers: PDDIKTI_HEADERS });
       if (resp.ok) {
         const json = await resp.json();
-        const records = extractRecords(json);
+        const records = json.data?.dosen || extractRecords(json);
         const pnlOnly = records.filter(r => {
-          const pt = (r.nama_pt || r.perguruan_tinggi || '').toLowerCase();
+          const pt = (r.nama_pt || r.sinkatan_pt || r.perguruan_tinggi || '').toLowerCase();
           return pt.includes('lhokseumawe') || pt.includes('pnl');
         });
         if (pnlOnly.length > 0) {

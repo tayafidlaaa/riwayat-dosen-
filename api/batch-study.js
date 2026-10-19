@@ -48,24 +48,32 @@ export default async function handler(req, res) {
     try {
       let pddiktiId = dosen.id || null;
 
-      // If ID not provided, search by NIDN or Nama
-      if (!pddiktiId) {
-        const query = (dosen.nidn || dosen.nama || '').trim();
-        if (query) {
-          const searchResp = await fetch(`${API_ROOT}/pencarian/dosen/${encodeURIComponent(query)}`, {
-            headers: PDDIKTI_HEADERS
-          });
-          if (searchResp.ok) {
-            const searchJson = await searchResp.json();
-            const recs = extractRecords(searchJson);
-            const matched = recs.find(r => 
-              (dosen.nidn && r.nidn === dosen.nidn) || 
-              (r.nama && r.nama.toLowerCase().trim() === dosen.nama.toLowerCase().trim())
-            );
-            if (matched && matched.id) {
-              pddiktiId = matched.id;
+      // If ID not provided or is prefix, search by enc/all
+      if (!pddiktiId || pddiktiId.startsWith('nidn_') || pddiktiId.startsWith('nama_')) {
+        const queries = [];
+        if (dosen.nama) queries.push(`${dosen.nama} POLITEKNIK NEGERI LHOKSEUMAWE`);
+        if (dosen.nama) queries.push(dosen.nama);
+        if (dosen.nidn) queries.push(dosen.nidn);
+
+        for (const q of queries) {
+          try {
+            const searchResp = await fetch(`${API_ROOT}/pencarian/enc/all/${encodeURIComponent(q)}`, {
+              headers: PDDIKTI_HEADERS
+            });
+            if (searchResp.ok) {
+              const searchJson = await searchResp.json();
+              const recs = searchJson.data?.dosen || extractRecords(searchJson);
+              const matched = recs.find(r => 
+                (dosen.nidn && r.nidn === dosen.nidn) || 
+                (r.nama_pt && (r.nama_pt.toLowerCase().includes('lhokseumawe') || r.nama_pt.toLowerCase().includes('pnl'))) ||
+                (dosen.nama && r.nama && r.nama.toLowerCase().trim() === dosen.nama.toLowerCase().trim())
+              );
+              if (matched && matched.id) {
+                pddiktiId = matched.id;
+                break;
+              }
             }
-          }
+          } catch (_) {}
         }
       }
 
